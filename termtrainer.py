@@ -672,11 +672,54 @@ class ProgressTracker:
             "commands_practiced": {},
             "last_practice": None,
             "achievements": [],
+            "wrong_answers": {},
         }
 
     def save(self):
         with open(self.progress_file, 'w') as f:
             json.dump(self.data, f, indent=2)
+
+    def _ensure_wrong_answers(self):
+        """确保数据中包含 wrong_answers 字段（兼容旧数据）"""
+        if "wrong_answers" not in self.data:
+            self.data["wrong_answers"] = {}
+
+    def record_wrong_answer(self, category: str, command: str, question: str,
+                            answers: list, user_answer: str):
+        """记录错题到错题本"""
+        self._ensure_wrong_answers()
+        key = f"{category}::{command}::{question}"
+        if key in self.data["wrong_answers"]:
+            entry = self.data["wrong_answers"][key]
+            entry["wrong_count"] += 1
+            entry["last_wrong"] = datetime.now().isoformat()
+            entry["last_user_answer"] = user_answer
+        else:
+            self.data["wrong_answers"][key] = {
+                "category": category,
+                "command": command,
+                "question": question,
+                "answers": answers,
+                "wrong_count": 1,
+                "last_wrong": datetime.now().isoformat(),
+                "last_user_answer": user_answer,
+            }
+
+    def remove_wrong_answer(self, key: str):
+        """从错题本中移除已掌握的题目"""
+        self._ensure_wrong_answers()
+        if key in self.data["wrong_answers"]:
+            del self.data["wrong_answers"][key]
+
+    def get_wrong_exercises(self) -> list:
+        """获取错题列表，按错误次数降序排列"""
+        self._ensure_wrong_answers()
+        wrong = self.data["wrong_answers"]
+        exercises = []
+        for key, entry in wrong.items():
+            exercises.append({"key": key, **entry})
+        exercises.sort(key=lambda x: x["wrong_count"], reverse=True)
+        return exercises
 
     def record_attempt(self, category: str, command: str, correct: bool):
         self.data["total_exercises"] += 1
@@ -795,8 +838,11 @@ class TermTrainer:
                   f"{colored(f'({cmd_count} 个命令)', Colors.DIM)}")
 
         print(colored("\n═══════════════════════════════════════════════════════════════", Colors.DIM))
+        wrong_count = len(self.progress.get_wrong_exercises())
+        wrong_label = f" ({wrong_count}题)" if wrong_count > 0 else ""
         print(f"\n  {colored('[a]', Colors.GREEN)} 📖 查看所有命令")
         print(f"  {colored('[r]', Colors.GREEN)} 🎲 随机练习")
+        print(f"  {colored('[w]', Colors.GREEN)} 📕 错题本{colored(wrong_label, Colors.RED) if wrong_count else ''}")
         print(f"  {colored('[s]', Colors.GREEN)} 📈 查看详细统计")
         print(f"  {colored('[h]', Colors.GREEN)} ❓ 帮助")
         print(f"  {colored('[q]', Colors.GREEN)} 🚪 退出")
@@ -833,6 +879,13 @@ class TermTrainer:
 ║  2. 阅读问题描述，输入你认为正确的命令                        ║
 ║  3. 系统会告诉你答案是否正确，并显示正确答案                  ║
 ║  4. 支持多个正确答案（不同的实现方式）                        ║
+║                                                               ║
+║  📕 错题本                                                     ║
+║  ────────                                                     ║
+║  • 答错的题目会自动记录到错题本                               ║
+║  • 在主菜单按 [w] 打开错题本                                  ║
+║  • 错题练习中答对的题目会自动移除                             ║
+║  • 错题按错误次数排序，帮你针对弱点练习                      ║
 ║                                                               ║
 ║  💡 提示                                                       ║
 ║  ────────                                                     ║
@@ -944,6 +997,9 @@ class TermTrainer:
                 elif user_input.lower() == 'skip':
                     print(colored(f"\n⏭️  跳过。正确答案: {ex['answers'][0]}", Colors.YELLOW))
                     self.progress.record_attempt(category_key, ex['command'], False)
+                    self.progress.record_wrong_answer(
+                        category_key, ex['command'], ex['question'],
+                        ex['answers'], '(跳过)')
                     break
                 elif user_input.lower() == 'hint':
                     print(colored(f"\n💡 提示: 命令以 '{ex['command']}' 开头", Colors.YELLOW))
@@ -961,6 +1017,9 @@ class TermTrainer:
                     if len(ex['answers']) > 1:
                         print(colored(f"   其他写法: {', '.join(ex['answers'][1:])}", Colors.DIM))
                     self.progress.record_attempt(category_key, ex['command'], False)
+                    self.progress.record_wrong_answer(
+                        category_key, ex['command'], ex['question'],
+                        ex['answers'], user_input)
                 break
 
             print(colored("─" * 60, Colors.DIM))
@@ -1014,6 +1073,9 @@ class TermTrainer:
                 elif user_input.lower() == 'skip':
                     print(colored(f"\n⏭️  跳过。正确答案: {ex['answers'][0]}", Colors.YELLOW))
                     self.progress.record_attempt(ex['category_key'], ex['command'], False)
+                    self.progress.record_wrong_answer(
+                        ex['category_key'], ex['command'], ex['question'],
+                        ex['answers'], '(跳过)')
                     break
                 elif user_input.lower() == 'hint':
                     print(colored(f"\n💡 提示: 命令以 '{ex['command']}' 开头", Colors.YELLOW))
@@ -1031,11 +1093,144 @@ class TermTrainer:
                     if len(ex['answers']) > 1:
                         print(colored(f"   其他写法: {', '.join(ex['answers'][1:])}", Colors.DIM))
                     self.progress.record_attempt(ex['category_key'], ex['command'], False)
+                    self.progress.record_wrong_answer(
+                        ex['category_key'], ex['command'], ex['question'],
+                        ex['answers'], user_input)
                 break
 
             print(colored("─" * 60, Colors.DIM))
 
         print(colored("\n🎉 随机练习完成！", Colors.GREEN + Colors.BOLD))
+        stats = self.progress.get_stats()
+        print(f"当前正确率: {stats['accuracy']:.1f}% | 连胜: {stats['streak']}")
+        print(colored("\n按 Enter 返回主菜单...", Colors.DIM))
+        input()
+
+    def show_wrong_notebook(self):
+        """查看错题本"""
+        self.clear_screen()
+        wrong_exercises = self.progress.get_wrong_exercises()
+
+        print(colored("\n📕 错题本\n", Colors.BOLD + Colors.CYAN))
+        print(colored("═" * 60, Colors.DIM))
+
+        if not wrong_exercises:
+            print(colored("\n🎉 错题本是空的，你太棒了！", Colors.GREEN + Colors.BOLD))
+            print(colored("\n按 Enter 返回主菜单...", Colors.DIM))
+            input()
+            return
+
+        print(f"\n共有 {colored(str(len(wrong_exercises)), Colors.YELLOW + Colors.BOLD)} 道错题\n")
+
+        for i, ex in enumerate(wrong_exercises, 1):
+            cat_name = COMMANDS_DB.get(ex['category'], {}).get('name', ex['category'])
+            print(f"  {colored(f'{i}.', Colors.CYAN)} [{cat_name}] "
+                  f"{colored(ex['command'], Colors.GREEN)} - {ex['question']}")
+            wrong_count_val = ex['wrong_count']
+            print(f"     {colored(f'错误次数: {wrong_count_val}', Colors.RED)} | "
+                  f"正确答案: {colored(ex['answers'][0], Colors.YELLOW)}")
+            if ex.get('last_user_answer'):
+                print(f"     上次回答: {colored(ex['last_user_answer'], Colors.DIM)}")
+            print()
+
+        print(colored("─" * 60, Colors.DIM))
+        print(f"\n  {colored('[p]', Colors.GREEN)} 开始练习错题")
+        print(f"  {colored('[c]', Colors.GREEN)} 清空错题本")
+        print(f"  {colored('[Enter]', Colors.GREEN)} 返回主菜单")
+
+        choice = input(colored("\n请选择 > ", Colors.GREEN)).strip().lower()
+        if choice == 'p':
+            self.practice_wrong_answers()
+        elif choice == 'c':
+            confirm = input(colored("确认清空错题本？(y/n) > ", Colors.YELLOW)).strip().lower()
+            if confirm == 'y':
+                self.progress._ensure_wrong_answers()
+                self.progress.data["wrong_answers"] = {}
+                self.progress.save()
+                print(colored("\n✅ 错题本已清空", Colors.GREEN))
+                input(colored("按 Enter 返回主菜单...", Colors.DIM))
+
+    def practice_wrong_answers(self):
+        """错题练习模式"""
+        wrong_exercises = self.progress.get_wrong_exercises()
+
+        if not wrong_exercises:
+            print(colored("\n🎉 错题本是空的，没有需要复习的题目！", Colors.GREEN))
+            input(colored("按 Enter 返回主菜单...", Colors.DIM))
+            return
+
+        self.clear_screen()
+        print(colored(f"\n📕 错题练习 ({len(wrong_exercises)}题)\n", Colors.BOLD + Colors.CYAN))
+        print(colored("答对的题目将从错题本中移除", Colors.DIM))
+        print(colored("输入 'hint' 获取提示, 'skip' 跳过, 'quit' 退出\n", Colors.DIM))
+        print(colored("═" * 60, Colors.DIM))
+
+        removed_count = 0
+        question_num = 0
+
+        for ex in wrong_exercises:
+            question_num += 1
+            cat_name = COMMANDS_DB.get(ex['category'], {}).get('name', ex['category'])
+
+            # 查找对应命令的 examples
+            examples = []
+            cat_data = COMMANDS_DB.get(ex['category'], {})
+            for cmd in cat_data.get('commands', []):
+                if cmd['command'] == ex['command']:
+                    examples = cmd.get('examples', [])
+                    break
+
+            wrong_count_val = ex['wrong_count']
+            print(f"\n{colored(f'题目 {question_num}/{len(wrong_exercises)}', Colors.YELLOW)} "
+                  f"{colored(f'[{cat_name}]', Colors.DIM)} "
+                  f"{colored(f'(错{wrong_count_val}次)', Colors.RED)}")
+            print(f"{colored('命令:', Colors.DIM)} {ex['command']}")
+            print(f"\n{colored('❓ 问题:', Colors.CYAN)} {ex['question']}")
+
+            while True:
+                try:
+                    user_input = input(colored("\n💻 你的答案: ", Colors.GREEN)).strip()
+                except EOFError:
+                    return
+
+                if user_input.lower() == 'quit':
+                    break
+                elif user_input.lower() == 'skip':
+                    print(colored(f"\n⏭️  跳过。正确答案: {ex['answers'][0]}", Colors.YELLOW))
+                    break
+                elif user_input.lower() == 'hint':
+                    print(colored(f"\n💡 提示: 命令以 '{ex['command']}' 开头", Colors.YELLOW))
+                    if examples:
+                        print(colored(f"   示例: {', '.join(examples[:2])}", Colors.DIM))
+                    continue
+                elif not user_input:
+                    continue
+
+                if self.check_answer(user_input, ex['answers']):
+                    print(colored("\n✅ 正确！已从错题本移除", Colors.GREEN + Colors.BOLD))
+                    self.progress.remove_wrong_answer(ex['key'])
+                    self.progress.record_attempt(ex['category'], ex['command'], True)
+                    removed_count += 1
+                else:
+                    print(colored("\n❌ 还是错了，继续加油！", Colors.RED))
+                    print(colored(f"   正确答案: {ex['answers'][0]}", Colors.YELLOW))
+                    if len(ex['answers']) > 1:
+                        print(colored(f"   其他写法: {', '.join(ex['answers'][1:])}", Colors.DIM))
+                    self.progress.record_attempt(ex['category'], ex['command'], False)
+                    self.progress.record_wrong_answer(
+                        ex['category'], ex['command'], ex['question'],
+                        ex['answers'], user_input)
+                break
+
+            if user_input.lower() == 'quit':
+                break
+
+            print(colored("─" * 60, Colors.DIM))
+
+        remaining = len(wrong_exercises) - removed_count
+        print(colored("\n📕 错题练习完成！", Colors.GREEN + Colors.BOLD))
+        print(f"本次答对 {colored(str(removed_count), Colors.GREEN)} 题，"
+              f"还剩 {colored(str(remaining), Colors.YELLOW)} 道错题")
         stats = self.progress.get_stats()
         print(f"当前正确率: {stats['accuracy']:.1f}% | 连胜: {stats['streak']}")
         print(colored("\n按 Enter 返回主菜单...", Colors.DIM))
@@ -1061,6 +1256,8 @@ class TermTrainer:
                 self.show_all_commands()
             elif choice == 'r':
                 self.random_practice()
+            elif choice == 'w':
+                self.show_wrong_notebook()
             elif choice == 's':
                 self.show_stats()
             elif choice == 'h':
