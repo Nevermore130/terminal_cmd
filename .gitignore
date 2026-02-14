@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
+
+# 注意: hooks/ 目录已纳入版本控制，用于共享 Git hooks

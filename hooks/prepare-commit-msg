@@ -1,0 +1,231 @@
+#!/bin/bash
+# AI-powered commit message generator using prepare-commit-msg hook
+# 在 git commit 时自动调用 AI 生成 commit message
+#
+# 安装: 将此文件放到 .git/hooks/prepare-commit-msg 并添加执行权限
+# 配置: export GEMINI_API_KEY='your-key' 或 ANTHROPIC_API_KEY 或 OPENAI_API_KEY
+#
+# 跳过 AI 生成: git commit -m "your message" 或 GIT_AI_SKIP=1 git commit
+# 优先级: GEMINI > ANTHROPIC > OPENAI
+
+set -e
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+SHA1=$3
+
+# 跳过条件：merge、squash、已有 message、环境变量跳过
+if [ "$COMMIT_SOURCE" = "merge" ] || [ "$COMMIT_SOURCE" = "squash" ]; then
+    exit 0
+fi
+
+if [ "$COMMIT_SOURCE" = "message" ]; then
+    exit 0
+fi
+
+if [ -n "$GIT_AI_SKIP" ]; then
+    exit 0
+fi
+
+# 获取 staged changes
+DIFF=$(git diff --cached --no-color 2>/dev/null)
+
+if [ -z "$DIFF" ]; then
+    exit 0
+fi
+
+# 获取变更统计
+STATS=$(git diff --cached --stat 2>/dev/null)
+FILES_CHANGED=$(git diff --cached --name-only 2>/dev/null | head -20)
+
+# 限制 diff 长度（约 4000 字符）
+DIFF_LIMITED=$(echo "$DIFF" | head -c 4000)
+
+# 构建上下文信息
+CONTEXT="Files changed:
+$FILES_CHANGED
+
+Stats:
+$STATS
+
+Diff (truncated):
+$DIFF_LIMITED"
+
+# 生成函数：Gemini API (Google)
+generate_with_gemini() {
+    local prompt="You are a git commit message expert. Generate a commit message based on the changes below.
+
+Rules:
+1. Use conventional commits: type(scope): description
+2. Types: feat, fix, docs, style, refactor, perf, test, chore, build
+3. First line under 72 characters
+4. Be specific and concise
+5. Use Chinese if the code comments are in Chinese, otherwise English
+6. Output ONLY the commit message, no quotes, no explanation
+
+Changes:
+$CONTEXT"
+
+    local escaped_prompt
+    escaped_prompt=$(printf '%s' "$prompt" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+    local response
+    response=$(curl -s --max-time 30 \
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$GEMINI_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"contents\": [{\"parts\": [{\"text\": $escaped_prompt}]}],
+            \"generationConfig\": {\"maxOutputTokens\": 200}
+        }" 2>/dev/null)
+
+    echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+    # 清理引号和多余空白
+    text = text.strip().strip('\"').strip(\"'\")
+    print(text)
+except:
+    pass
+" 2>/dev/null
+}
+
+# 生成函数：Anthropic API
+generate_with_anthropic() {
+    local prompt="You are a git commit message expert. Generate a commit message based on the changes below.
+
+Rules:
+1. Use conventional commits: type(scope): description
+2. Types: feat, fix, docs, style, refactor, perf, test, chore, build
+3. First line under 72 characters
+4. Be specific and concise
+5. Use Chinese if the code comments are in Chinese, otherwise English
+6. Output ONLY the commit message, no quotes, no explanation
+
+Changes:
+$CONTEXT"
+
+    local escaped_prompt
+    escaped_prompt=$(printf '%s' "$prompt" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+    local response
+    response=$(curl -s --max-time 30 https://api.anthropic.com/v1/messages \
+        -H "Content-Type: application/json" \
+        -H "x-api-key: $ANTHROPIC_API_KEY" \
+        -H "anthropic-version: 2023-06-01" \
+        -d "{
+            \"model\": \"claude-3-5-haiku-20241022\",
+            \"max_tokens\": 200,
+            \"messages\": [{\"role\": \"user\", \"content\": $escaped_prompt}]
+        }" 2>/dev/null)
+
+    echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    text = data.get('content', [{}])[0].get('text', '')
+    # 清理引号和多余空白
+    text = text.strip().strip('\"').strip(\"'\")
+    print(text)
+except:
+    pass
+" 2>/dev/null
+}
+
+# 生成函数：OpenAI API
+generate_with_openai() {
+    local prompt="Generate a git commit message for these changes. Use conventional commits format (type: description). Output ONLY the message.
+
+$CONTEXT"
+
+    local escaped_prompt
+    escaped_prompt=$(printf '%s' "$prompt" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+    local response
+    response=$(curl -s --max-time 30 https://api.openai.com/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -d "{
+            \"model\": \"gpt-4o-mini\",
+            \"max_tokens\": 200,
+            \"messages\": [{\"role\": \"user\", \"content\": $escaped_prompt}]
+        }" 2>/dev/null)
+
+    echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+    text = text.strip().strip('\"').strip(\"'\")
+    print(text)
+except:
+    pass
+" 2>/dev/null
+}
+
+# 写入默认内容的函数
+write_fallback() {
+    local reason=$1
+    cat > "$COMMIT_MSG_FILE" << EOF
+
+# $reason
+#
+# Changes to be committed:
+$(git diff --cached --stat 2>/dev/null | sed 's/^/#   /')
+#
+# Files:
+$(git diff --cached --name-only 2>/dev/null | sed 's/^/#   /')
+EOF
+}
+
+# 主逻辑：检查 API Key 并生成（优先级: GEMINI > ANTHROPIC > OPENAI）
+MESSAGE=""
+
+if [ -n "$GEMINI_API_KEY" ]; then
+    MESSAGE=$(generate_with_gemini)
+elif [ -n "$ANTHROPIC_API_KEY" ]; then
+    MESSAGE=$(generate_with_anthropic)
+elif [ -n "$OPENAI_API_KEY" ]; then
+    MESSAGE=$(generate_with_openai)
+else
+    write_fallback "Set GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY to enable AI commit messages"
+    exit 0
+fi
+
+# 检查是否成功生成
+if [ -n "$MESSAGE" ] && [ ${#MESSAGE} -gt 5 ]; then
+    # 获取文件数和行数变化
+    FILES_COUNT=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
+    INSERTIONS=$(git diff --cached --stat 2>/dev/null | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo "0")
+    DELETIONS=$(git diff --cached --stat 2>/dev/null | tail -1 | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo "0")
+
+    # 写入生成的 message 和确认指引
+    cat > "$COMMIT_MSG_FILE" << EOF
+$MESSAGE
+
+# ═══════════════════════════════════════════════════════════════
+# 🤖 AI-generated commit message
+# ═══════════════════════════════════════════════════════════════
+#
+# ┌─────────────────────────────────────────────────────────────┐
+# │  ✅ 确认提交: 保存并退出编辑器 (:wq 或 :x)                    │
+# │  ❌ 取消提交: 删除所有非注释内容后保存，或直接退出 (:q!)       │
+# │  ✏️  修改信息: 直接编辑上方的 commit message                  │
+# └─────────────────────────────────────────────────────────────┘
+#
+# 📊 本次变更统计:
+#    文件数: $FILES_COUNT | 新增: +$INSERTIONS | 删除: -$DELETIONS
+#
+# 📁 变更文件:
+$(git diff --cached --name-only 2>/dev/null | sed 's/^/#   /')
+#
+# 📝 变更详情:
+$(git diff --cached --stat 2>/dev/null | sed 's/^/#   /')
+# ═══════════════════════════════════════════════════════════════
+EOF
+else
+    write_fallback "AI generation failed - please write commit message manually"
+fi
+
+exit 0
