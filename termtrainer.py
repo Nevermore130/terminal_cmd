@@ -980,6 +980,8 @@ class TermTrainer:
         print(colored("═" * 60, Colors.DIM))
 
         question_num = 0
+        session_total = 0
+        session_correct = 0
         for ex in exercises:
             question_num += 1
             print(f"\n{colored(f'题目 {question_num}/{len(exercises)}', Colors.YELLOW)}")
@@ -993,13 +995,14 @@ class TermTrainer:
                     return
 
                 if user_input.lower() == 'quit':
-                    return
+                    break
                 elif user_input.lower() == 'skip':
                     print(colored(f"\n⏭️  跳过。正确答案: {ex['answers'][0]}", Colors.YELLOW))
                     self.progress.record_attempt(category_key, ex['command'], False)
                     self.progress.record_wrong_answer(
                         category_key, ex['command'], ex['question'],
                         ex['answers'], '(跳过)')
+                    session_total += 1
                     break
                 elif user_input.lower() == 'hint':
                     print(colored(f"\n💡 提示: 命令以 '{ex['command']}' 开头", Colors.YELLOW))
@@ -1008,9 +1011,11 @@ class TermTrainer:
                 elif not user_input:
                     continue
 
+                session_total += 1
                 if self.check_answer(user_input, ex['answers']):
                     print(colored("\n✅ 正确！", Colors.GREEN + Colors.BOLD))
                     self.progress.record_attempt(category_key, ex['command'], True)
+                    session_correct += 1
                 else:
                     print(colored("\n❌ 错误", Colors.RED))
                     print(colored(f"   正确答案: {ex['answers'][0]}", Colors.YELLOW))
@@ -1022,11 +1027,15 @@ class TermTrainer:
                         ex['answers'], user_input)
                 break
 
+            if user_input.lower() == 'quit':
+                break
+
             print(colored("─" * 60, Colors.DIM))
 
         print(colored("\n🎉 该类别练习完成！", Colors.GREEN + Colors.BOLD))
+        session_accuracy = (session_correct / session_total * 100) if session_total > 0 else 0
         stats = self.progress.get_stats()
-        print(f"当前正确率: {stats['accuracy']:.1f}% | 连胜: {stats['streak']}")
+        print(f"本轮正确率: {session_accuracy:.1f}% ({session_correct}/{session_total}) | 连胜: {stats['streak']}")
         print(colored("\n按 Enter 返回主菜单...", Colors.DIM))
         input()
 
@@ -1054,6 +1063,8 @@ class TermTrainer:
         print(colored("═" * 60, Colors.DIM))
 
         question_num = 0
+        session_total = 0
+        session_correct = 0
         for ex in exercises:
             question_num += 1
             cat_name = ex['category_name']
@@ -1069,13 +1080,14 @@ class TermTrainer:
                     return
 
                 if user_input.lower() == 'quit':
-                    return
+                    break
                 elif user_input.lower() == 'skip':
                     print(colored(f"\n⏭️  跳过。正确答案: {ex['answers'][0]}", Colors.YELLOW))
                     self.progress.record_attempt(ex['category_key'], ex['command'], False)
                     self.progress.record_wrong_answer(
                         ex['category_key'], ex['command'], ex['question'],
                         ex['answers'], '(跳过)')
+                    session_total += 1
                     break
                 elif user_input.lower() == 'hint':
                     print(colored(f"\n💡 提示: 命令以 '{ex['command']}' 开头", Colors.YELLOW))
@@ -1084,9 +1096,11 @@ class TermTrainer:
                 elif not user_input:
                     continue
 
+                session_total += 1
                 if self.check_answer(user_input, ex['answers']):
                     print(colored("\n✅ 正确！", Colors.GREEN + Colors.BOLD))
                     self.progress.record_attempt(ex['category_key'], ex['command'], True)
+                    session_correct += 1
                 else:
                     print(colored("\n❌ 错误", Colors.RED))
                     print(colored(f"   正确答案: {ex['answers'][0]}", Colors.YELLOW))
@@ -1098,11 +1112,15 @@ class TermTrainer:
                         ex['answers'], user_input)
                 break
 
+            if user_input.lower() == 'quit':
+                break
+
             print(colored("─" * 60, Colors.DIM))
 
         print(colored("\n🎉 随机练习完成！", Colors.GREEN + Colors.BOLD))
+        session_accuracy = (session_correct / session_total * 100) if session_total > 0 else 0
         stats = self.progress.get_stats()
-        print(f"当前正确率: {stats['accuracy']:.1f}% | 连胜: {stats['streak']}")
+        print(f"本轮正确率: {session_accuracy:.1f}% ({session_correct}/{session_total}) | 连胜: {stats['streak']}")
         print(colored("\n按 Enter 返回主菜单...", Colors.DIM))
         input()
 
@@ -1231,8 +1249,9 @@ class TermTrainer:
         print(colored("\n📕 错题练习完成！", Colors.GREEN + Colors.BOLD))
         print(f"本次答对 {colored(str(removed_count), Colors.GREEN)} 题，"
               f"还剩 {colored(str(remaining), Colors.YELLOW)} 道错题")
+        session_accuracy = (removed_count / question_num * 100) if question_num > 0 else 0
         stats = self.progress.get_stats()
-        print(f"当前正确率: {stats['accuracy']:.1f}% | 连胜: {stats['streak']}")
+        print(f"本轮正确率: {session_accuracy:.1f}% ({removed_count}/{question_num}) | 连胜: {stats['streak']}")
         print(colored("\n按 Enter 返回主菜单...", Colors.DIM))
         input()
 
